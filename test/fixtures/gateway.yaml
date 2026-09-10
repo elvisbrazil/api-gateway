@@ -1,0 +1,19 @@
+auth:
+  jwksUrl: http://localhost:9000/.well-known/jwks.json
+
+routes:
+  - prefix: /api/users/
+    upstreams:
+      - http://localhost:4001
+    auth:
+      scopes: [users:read]
+    rateLimit:
+      limit: 10
+      windowMs: 1000
+      key: user
+  - prefix: /api/orders
+    upstreams:
+      - http://localhost:4002
+      - http://localhost:4003
+    retries: 2
+    cacheTtlMs: 5000
