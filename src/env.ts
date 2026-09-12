@@ -5,6 +5,7 @@ const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().default(8080),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+  GATEWAY_CONFIG: z.string().default("gateway.yaml"),
 });
 
 export type Env = z.infer<typeof envSchema>;
