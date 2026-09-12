@@ -1,9 +1,17 @@
+import type { IncomingHttpHeaders } from "node:http";
 import Fastify, { type FastifyInstance } from "fastify";
 
 export interface Upstream {
   app: FastifyInstance;
   url: string;
   close: () => Promise<void>;
+}
+
+export interface EchoBody {
+  method: string;
+  url: string;
+  headers: IncomingHttpHeaders;
+  body: unknown;
 }
 
 export async function startUpstream(
@@ -18,7 +26,7 @@ export async function startUpstream(
 }
 
 export function echoRoutes(app: FastifyInstance) {
-  app.all("/*", (request) => ({
+  app.all("/*", (request): EchoBody => ({
     method: request.method,
     url: request.url,
     headers: request.headers,

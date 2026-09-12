@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { gatewayConfig } from "./support/config.js";
-import { startUpstream, type Upstream } from "./support/upstream.js";
+import { startUpstream, type EchoBody, type Upstream } from "./support/upstream.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 
@@ -56,5 +56,81 @@ describe("proxy", () => {
     const res = await app.inject({ method: "GET", url: "/api/orders" });
 
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("proxy headers", () => {
+  it("generates a request id and sends it both ways", async () => {
+    const { app } = await setup();
+
+    const res = await app.inject({ method: "GET", url: "/api/users/1" });
+
+    const id = res.headers["x-request-id"];
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.json<EchoBody>().headers["x-request-id"]).toBe(id);
+  });
+
+  it("propagates an incoming request id", async () => {
+    const { app } = await setup();
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/users/1",
+      headers: { "x-request-id": "abc-123" },
+    });
+
+    expect(res.headers["x-request-id"]).toBe("abc-123");
+    expect(res.json<EchoBody>().headers["x-request-id"]).toBe("abc-123");
+  });
+
+  it("replaces a malformed request id", async () => {
+    const { app } = await setup();
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/users/1",
+      headers: { "x-request-id": "bad id\twith spaces" },
+    });
+
+    expect(res.headers["x-request-id"]).not.toBe("bad id\twith spaces");
+  });
+
+  it("adds x-forwarded headers and appends to an existing x-forwarded-for", async () => {
+    const { app } = await setup();
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/users/1",
+      headers: { host: "gateway.local", "x-forwarded-for": "203.0.113.9" },
+      remoteAddress: "10.0.0.5",
+    });
+
+    expect(res.json<EchoBody>().headers).toMatchObject({
+      "x-forwarded-for": "203.0.113.9, 10.0.0.5",
+      "x-forwarded-proto": "http",
+      "x-forwarded-host": "gateway.local",
+    });
+  });
+
+  it("does not forward hop-by-hop headers", async () => {
+    const { app } = await setup();
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/users/1",
+      headers: {
+        connection: "keep-alive, x-internal",
+        "keep-alive": "timeout=5",
+        "x-internal": "secret",
+        "proxy-authorization": "Basic Zm9vOmJhcg==",
+        "x-custom": "kept",
+      },
+    });
+
+    const headers = res.json<EchoBody>().headers;
+    expect(headers["x-custom"]).toBe("kept");
+    expect(headers).not.toHaveProperty("x-internal");
+    expect(headers).not.toHaveProperty("keep-alive");
+    expect(headers).not.toHaveProperty("proxy-authorization");
   });
 });

@@ -1,6 +1,7 @@
 import replyFrom from "@fastify/reply-from";
 import type { FastifyInstance } from "fastify";
 import type { GatewayConfig, RouteConfig } from "../config/schema.js";
+import { stripHopByHop, upstreamRequestHeaders } from "./headers.js";
 import { buildTargetUrl } from "./target-url.js";
 
 export async function proxyRoutes(app: FastifyInstance, opts: { config: GatewayConfig }) {
@@ -24,7 +25,11 @@ function registerRoute(app: FastifyInstance, route: RouteConfig) {
   for (const url of paths) {
     app.all(url, (request, reply) => {
       const target = buildTargetUrl(upstream, route.prefix, request.url, route.stripPrefix);
-      return reply.from(target, { timeout: route.timeoutMs });
+      return reply.from(target, {
+        timeout: route.timeoutMs,
+        rewriteRequestHeaders: (_req, headers) => upstreamRequestHeaders(request, headers),
+        rewriteHeaders: stripHopByHop,
+      });
     });
   }
 }
