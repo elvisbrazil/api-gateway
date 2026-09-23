@@ -39,3 +39,9 @@ export function upstreamRequestHeaders(
   result["x-request-id"] = request.id;
   return result;
 }
+
+export function downstreamResponseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
+  const result = stripHopByHop(headers);
+  delete result["x-request-id"];
+  return result;
+}

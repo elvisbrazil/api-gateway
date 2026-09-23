@@ -1,9 +1,19 @@
+import type { IncomingHttpHeaders } from "node:http";
 import replyFrom from "@fastify/reply-from";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewayConfig, RouteConfig } from "../config/schema.js";
 import { UpstreamPool, type UpstreamTarget } from "../resilience/upstream-pool.js";
-import { stripHopByHop, upstreamRequestHeaders } from "./headers.js";
+import { downstreamResponseHeaders, upstreamRequestHeaders } from "./headers.js";
 import { buildTargetUrl } from "./target-url.js";
+
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+interface ProxyContext {
+  request: FastifyRequest;
+  reply: FastifyReply;
+  route: RouteConfig;
+  pool: UpstreamPool;
+}
 
 export async function proxyRoutes(app: FastifyInstance, opts: { config: GatewayConfig }) {
   app.removeAllContentTypeParsers();
@@ -30,31 +40,56 @@ function registerRoute(app: FastifyInstance, route: RouteConfig, pool: UpstreamP
           .code(503)
           .send({ error: "Service Unavailable", message: "no healthy upstream available" });
       }
-      return forward(request, reply, route, target);
+      return forward({ request, reply, route, pool }, target, 0);
     });
   }
 }
 
-function forward(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  route: RouteConfig,
-  target: UpstreamTarget,
-) {
+function forward(ctx: ProxyContext, target: UpstreamTarget, attempt: number) {
+  const { request, reply, route } = ctx;
   const url = buildTargetUrl(target.url, route.prefix, request.url, route.stripPrefix);
+  let copiedHeaders: IncomingHttpHeaders = {};
+
+  const retryTarget = () => {
+    const canRetry = IDEMPOTENT_METHODS.has(request.method) && attempt < route.retries;
+    return canRetry ? ctx.pool.next() : undefined;
+  };
 
   return reply.from(url, {
     timeout: route.timeoutMs,
+    retryDelay: () => null,
     rewriteRequestHeaders: (_req, headers) => upstreamRequestHeaders(request, headers),
-    rewriteHeaders: stripHopByHop,
+    rewriteHeaders: (headers) => {
+      copiedHeaders = downstreamResponseHeaders(headers);
+      return copiedHeaders;
+    },
     onResponse: (_req, res, upstream) => {
-      if (upstream.statusCode >= 500) target.breaker.recordFailure();
-      else target.breaker.recordSuccess();
-      res.send(upstream.stream);
+      if (upstream.statusCode < 500) {
+        target.breaker.recordSuccess();
+        res.send(upstream.stream);
+        return;
+      }
+
+      target.breaker.recordFailure();
+      const next = retryTarget();
+      if (!next) {
+        res.send(upstream.stream);
+        return;
+      }
+      upstream.stream.resume();
+      for (const name of Object.keys(copiedHeaders)) res.removeHeader(name);
+      request.log.info({ upstream: target.url, status: upstream.statusCode, attempt }, "retrying");
+      void forward(ctx, next, attempt + 1);
     },
     onError: (res, { error }) => {
       target.breaker.recordFailure();
-      request.log.warn({ err: error, upstream: target.url }, "upstream request failed");
+      request.log.warn({ err: error, upstream: target.url, attempt }, "upstream request failed");
+
+      const next = retryTarget();
+      if (next) {
+        void forward(ctx, next, attempt + 1);
+        return;
+      }
       if (isTimeout(error)) {
         res.code(504).send({
           error: "Gateway Timeout",
