@@ -6,6 +6,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(8080),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   GATEWAY_CONFIG: z.string().default("gateway.yaml"),
+  REDIS_URL: z.url({ protocol: /^rediss?$/ }).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
