@@ -1,7 +1,14 @@
 import type { IncomingHttpHeaders } from "node:http";
 import replyFrom from "@fastify/reply-from";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  onRequestAsyncHookHandler,
+} from "fastify";
 import type { GatewayConfig, RouteConfig } from "../config/schema.js";
+import { rateLimitHook } from "../rate-limit/hook.js";
+import type { RateLimiter } from "../rate-limit/rate-limiter.js";
 import { UpstreamPool, type UpstreamTarget } from "../resilience/upstream-pool.js";
 import { downstreamResponseHeaders, upstreamRequestHeaders } from "./headers.js";
 import { buildTargetUrl } from "./target-url.js";
@@ -15,7 +22,12 @@ interface ProxyContext {
   pool: UpstreamPool;
 }
 
-export async function proxyRoutes(app: FastifyInstance, opts: { config: GatewayConfig }) {
+export interface ProxyRoutesOptions {
+  config: GatewayConfig;
+  rateLimiter: RateLimiter;
+}
+
+export async function proxyRoutes(app: FastifyInstance, opts: ProxyRoutesOptions) {
   app.removeAllContentTypeParsers();
   app.addContentTypeParser("*", (_request, payload, done) => {
     done(null, payload);
@@ -25,15 +37,24 @@ export async function proxyRoutes(app: FastifyInstance, opts: { config: GatewayC
 
   for (const route of opts.config.routes) {
     const pool = new UpstreamPool(route.upstreams, opts.config.circuitBreaker);
-    registerRoute(app, route, pool);
+    const onRequest: onRequestAsyncHookHandler[] = [];
+    if (route.rateLimit) {
+      onRequest.push(rateLimitHook(opts.rateLimiter, route.rateLimit, route.prefix));
+    }
+    registerRoute(app, route, pool, onRequest);
   }
 }
 
-function registerRoute(app: FastifyInstance, route: RouteConfig, pool: UpstreamPool) {
+function registerRoute(
+  app: FastifyInstance,
+  route: RouteConfig,
+  pool: UpstreamPool,
+  onRequest: onRequestAsyncHookHandler[],
+) {
   const paths = route.prefix === "/" ? ["/", "/*"] : [route.prefix, `${route.prefix}/*`];
 
   for (const url of paths) {
-    app.all(url, (request, reply) => {
+    app.all(url, { onRequest }, (request, reply) => {
       const target = pool.next();
       if (!target) {
         return reply
