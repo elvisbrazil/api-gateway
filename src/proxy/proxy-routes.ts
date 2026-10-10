@@ -6,6 +6,8 @@ import type {
   FastifyRequest,
   onRequestAsyncHookHandler,
 } from "fastify";
+import { authHook } from "../auth/auth-hook.js";
+import type { TokenVerifier } from "../auth/jwt-verifier.js";
 import type { GatewayConfig, RouteConfig } from "../config/schema.js";
 import { rateLimitHook } from "../rate-limit/hook.js";
 import type { RateLimiter } from "../rate-limit/rate-limiter.js";
@@ -25,6 +27,7 @@ interface ProxyContext {
 export interface ProxyRoutesOptions {
   config: GatewayConfig;
   rateLimiter: RateLimiter;
+  tokenVerifier?: TokenVerifier;
 }
 
 export async function proxyRoutes(app: FastifyInstance, opts: ProxyRoutesOptions) {
@@ -33,11 +36,16 @@ export async function proxyRoutes(app: FastifyInstance, opts: ProxyRoutesOptions
     done(null, payload);
   });
 
+  app.decorateRequest("user", null);
   await app.register(replyFrom, { disableCache: true, disableRequestLogging: true });
 
   for (const route of opts.config.routes) {
     const pool = new UpstreamPool(route.upstreams, opts.config.circuitBreaker);
     const onRequest: onRequestAsyncHookHandler[] = [];
+    if (route.auth.required) {
+      if (!opts.tokenVerifier) throw new Error(`route ${route.prefix} requires auth`);
+      onRequest.push(authHook(opts.tokenVerifier, route.auth.scopes));
+    }
     if (route.rateLimit) {
       onRequest.push(rateLimitHook(opts.rateLimiter, route.rateLimit, route.prefix));
     }

@@ -1,4 +1,5 @@
 import Fastify, { type FastifyServerOptions } from "fastify";
+import { createJwtVerifier, type TokenVerifier } from "./auth/jwt-verifier.js";
 import type { GatewayConfig } from "./config/schema.js";
 import { proxyRoutes } from "./proxy/proxy-routes.js";
 import { MemoryRateLimitStore } from "./rate-limit/memory-store.js";
@@ -9,6 +10,7 @@ import { requestId } from "./request-id.js";
 export interface AppOptions {
   config: GatewayConfig;
   rateLimitStore?: RateLimitStore;
+  tokenVerifier?: TokenVerifier;
   logger?: FastifyServerOptions["logger"];
 }
 
@@ -33,6 +35,8 @@ export async function buildApp(options: AppOptions) {
   await app.register(proxyRoutes, {
     config: options.config,
     rateLimiter: new RateLimiter(rateLimitStore),
+    tokenVerifier:
+      options.tokenVerifier ?? (options.config.auth && createJwtVerifier(options.config.auth)),
   });
 
   await app.ready();

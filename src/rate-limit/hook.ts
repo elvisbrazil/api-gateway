@@ -25,6 +25,9 @@ export function rateLimitHook(limiter: RateLimiter, policy: RateLimitPolicy, pre
 }
 
 function clientKey(request: FastifyRequest, policy: RateLimitPolicy) {
+  if (policy.key === "user" && request.user) {
+    return `user:${request.user.id}`;
+  }
   if (policy.key === "apiKey") {
     const apiKey = request.headers["x-api-key"];
     if (typeof apiKey === "string" && apiKey.length > 0) {

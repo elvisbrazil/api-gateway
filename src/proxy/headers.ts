@@ -32,6 +32,13 @@ export function upstreamRequestHeaders(
   headers: IncomingHttpHeaders,
 ): IncomingHttpHeaders {
   const result = stripHopByHop(headers);
+  delete result["x-user-id"];
+  delete result["x-user-scopes"];
+  if (request.user) {
+    result["x-user-id"] = request.user.id;
+    result["x-user-scopes"] = request.user.scopes.join(" ");
+  }
+
   const forwardedFor = headers["x-forwarded-for"];
   result["x-forwarded-for"] = forwardedFor ? `${String(forwardedFor)}, ${request.ip}` : request.ip;
   result["x-forwarded-proto"] = request.protocol;
