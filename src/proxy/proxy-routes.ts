@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from "node:http";
+import type { Readable } from "node:stream";
 import replyFrom from "@fastify/reply-from";
 import type {
   FastifyInstance,
@@ -8,6 +9,7 @@ import type {
 } from "fastify";
 import { authHook } from "../auth/auth-hook.js";
 import type { TokenVerifier } from "../auth/jwt-verifier.js";
+import { isCacheable, ResponseCache } from "../cache/response-cache.js";
 import type { GatewayConfig, RouteConfig } from "../config/schema.js";
 import { rateLimitHook } from "../rate-limit/hook.js";
 import type { RateLimiter } from "../rate-limit/rate-limiter.js";
@@ -22,12 +24,15 @@ interface ProxyContext {
   reply: FastifyReply;
   route: RouteConfig;
   pool: UpstreamPool;
+  cache: ResponseCache;
+  cacheKey?: string;
 }
 
 export interface ProxyRoutesOptions {
   config: GatewayConfig;
   rateLimiter: RateLimiter;
   tokenVerifier?: TokenVerifier;
+  cache?: ResponseCache;
 }
 
 export async function proxyRoutes(app: FastifyInstance, opts: ProxyRoutesOptions) {
@@ -39,6 +44,8 @@ export async function proxyRoutes(app: FastifyInstance, opts: ProxyRoutesOptions
   app.decorateRequest("user", null);
   await app.register(replyFrom, { disableCache: true, disableRequestLogging: true });
 
+  const cache = opts.cache ?? new ResponseCache();
+
   for (const route of opts.config.routes) {
     const pool = new UpstreamPool(route.upstreams, opts.config.circuitBreaker);
     const onRequest: onRequestAsyncHookHandler[] = [];
@@ -49,29 +56,46 @@ export async function proxyRoutes(app: FastifyInstance, opts: ProxyRoutesOptions
     if (route.rateLimit) {
       onRequest.push(rateLimitHook(opts.rateLimiter, route.rateLimit, route.prefix));
     }
-    registerRoute(app, route, pool, onRequest);
+    registerRoute(app, { route, pool, cache }, onRequest);
   }
 }
 
 function registerRoute(
   app: FastifyInstance,
-  route: RouteConfig,
-  pool: UpstreamPool,
+  deps: Pick<ProxyContext, "route" | "pool" | "cache">,
   onRequest: onRequestAsyncHookHandler[],
 ) {
+  const { route, pool, cache } = deps;
   const paths = route.prefix === "/" ? ["/", "/*"] : [route.prefix, `${route.prefix}/*`];
 
   for (const url of paths) {
     app.all(url, { onRequest }, (request, reply) => {
+      const cacheKey =
+        route.cacheTtlMs > 0 && request.method === "GET" ? cacheKeyFor(request) : undefined;
+      if (cacheKey) {
+        const hit = cache.get(cacheKey);
+        if (hit) {
+          return reply
+            .code(hit.statusCode)
+            .headers(hit.headers)
+            .header("x-cache", "HIT")
+            .send(hit.body);
+        }
+      }
+
       const target = pool.next();
       if (!target) {
         return reply
           .code(503)
           .send({ error: "Service Unavailable", message: "no healthy upstream available" });
       }
-      return forward({ request, reply, route, pool }, target, 0);
+      return forward({ request, reply, route, pool, cache, cacheKey }, target, 0);
     });
   }
+}
+
+function cacheKeyFor(request: FastifyRequest) {
+  return request.user ? `${request.url}#${request.user.id}` : request.url;
 }
 
 function forward(ctx: ProxyContext, target: UpstreamTarget, attempt: number) {
@@ -95,6 +119,13 @@ function forward(ctx: ProxyContext, target: UpstreamTarget, attempt: number) {
     onResponse: (_req, res, upstream) => {
       if (upstream.statusCode < 500) {
         target.breaker.recordSuccess();
+        if (ctx.cacheKey) {
+          res.header("x-cache", "MISS");
+          if (isCacheable(upstream.statusCode, copiedHeaders)) {
+            sendAndCache(ctx, ctx.cacheKey, upstream.statusCode, copiedHeaders, upstream.stream);
+            return;
+          }
+        }
         res.send(upstream.stream);
         return;
       }
@@ -129,6 +160,26 @@ function forward(ctx: ProxyContext, target: UpstreamTarget, attempt: number) {
       res.code(502).send({ error: "Bad Gateway", message: "upstream request failed" });
     },
   });
+}
+
+function sendAndCache(
+  ctx: ProxyContext,
+  key: string,
+  statusCode: number,
+  headers: IncomingHttpHeaders,
+  stream: Readable,
+) {
+  stream.toArray().then(
+    (chunks) => {
+      const body = Buffer.concat(chunks as Buffer[]);
+      ctx.cache.set(key, { statusCode, headers, body }, ctx.route.cacheTtlMs);
+      ctx.reply.send(body);
+    },
+    (err: unknown) => {
+      ctx.request.log.warn({ err }, "failed to read upstream response");
+      ctx.reply.code(502).send({ error: "Bad Gateway", message: "upstream response was cut off" });
+    },
+  );
 }
 
 function isTimeout(error: Error) {
