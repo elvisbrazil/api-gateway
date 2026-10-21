@@ -11,6 +11,7 @@ import { authHook } from "../auth/auth-hook.js";
 import type { TokenVerifier } from "../auth/jwt-verifier.js";
 import { isCacheable, ResponseCache } from "../cache/response-cache.js";
 import type { GatewayConfig, RouteConfig } from "../config/schema.js";
+import type { GatewayMetrics } from "../metrics.js";
 import { rateLimitHook } from "../rate-limit/hook.js";
 import type { RateLimiter } from "../rate-limit/rate-limiter.js";
 import { UpstreamPool, type UpstreamTarget } from "../resilience/upstream-pool.js";
@@ -32,6 +33,7 @@ export interface ProxyRoutesOptions {
   config: GatewayConfig;
   rateLimiter: RateLimiter;
   tokenVerifier?: TokenVerifier;
+  metrics: GatewayMetrics;
   cache?: ResponseCache;
 }
 
@@ -48,6 +50,7 @@ export async function proxyRoutes(app: FastifyInstance, opts: ProxyRoutesOptions
 
   for (const route of opts.config.routes) {
     const pool = new UpstreamPool(route.upstreams, opts.config.circuitBreaker);
+    opts.metrics.trackPool(route.prefix, pool);
     const onRequest: onRequestAsyncHookHandler[] = [];
     if (route.auth.required) {
       if (!opts.tokenVerifier) throw new Error(`route ${route.prefix} requires auth`);
@@ -69,7 +72,7 @@ function registerRoute(
   const paths = route.prefix === "/" ? ["/", "/*"] : [route.prefix, `${route.prefix}/*`];
 
   for (const url of paths) {
-    app.all(url, { onRequest }, (request, reply) => {
+    app.all(url, { onRequest, config: { routePrefix: route.prefix } }, (request, reply) => {
       const cacheKey =
         route.cacheTtlMs > 0 && request.method === "GET" ? cacheKeyFor(request) : undefined;
       if (cacheKey) {
