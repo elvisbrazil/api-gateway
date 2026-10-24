@@ -1,0 +1,66 @@
+x-app: &app
+  build: .
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  auth:
+    <<: *app
+    command: ["node", "examples/dev-auth.js"]
+    environment:
+      PORT: 4000
+    ports:
+      - "4000:4000"
+
+  users:
+    <<: *app
+    command: ["node", "examples/users-service.js"]
+    environment:
+      PORT: 4001
+    ports:
+      - "4001:4001"
+
+  orders-a:
+    <<: *app
+    command: ["node", "examples/orders-service.js"]
+    environment:
+      PORT: 4002
+      INSTANCE: orders-a
+    ports:
+      - "4002:4002"
+
+  orders-b:
+    <<: *app
+    command: ["node", "examples/orders-service.js"]
+    environment:
+      PORT: 4002
+      INSTANCE: orders-b
+    ports:
+      - "4003:4002"
+
+  gateway:
+    <<: *app
+    environment:
+      PORT: 8080
+      GATEWAY_CONFIG: examples/gateway.docker.yaml
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      users:
+        condition: service_started
+      orders-a:
+        condition: service_started
+      orders-b:
+        condition: service_started

@@ -1,0 +1,32 @@
+auth:
+  jwksUrl: http://localhost:4000/.well-known/jwks.json
+  issuer: dev-auth
+  audience: api-gateway
+
+circuitBreaker:
+  failureThreshold: 3
+  cooldownMs: 15000
+
+routes:
+  - prefix: /api/users
+    upstreams:
+      - http://localhost:4001
+    auth:
+      scopes: [users:read]
+    rateLimit:
+      limit: 20
+      windowMs: 60000
+      algorithm: sliding
+      key: user
+
+  - prefix: /api/orders
+    upstreams:
+      - http://localhost:4002
+      - http://localhost:4003
+    timeoutMs: 2000
+    retries: 1
+    cacheTtlMs: 10000
+    rateLimit:
+      limit: 5
+      windowMs: 10000
+      key: ip
