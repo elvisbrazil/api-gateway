@@ -116,4 +116,18 @@ describe("authenticated routes", () => {
     expect(aliceAgain.statusCode).toBe(429);
     expect(bobFirst.statusCode).toBe(200);
   });
+
+  it("does not share cached responses between users", async () => {
+    const app = await setup({ cacheTtlMs: 60_000 });
+    const alice = { authorization: `Bearer ${await jwks.sign({ sub: "alice" })}` };
+    const bob = { authorization: `Bearer ${await jwks.sign({ sub: "bob" })}` };
+
+    await app.inject({ method: "GET", url: "/orders/mine", headers: alice });
+    const aliceAgain = await app.inject({ method: "GET", url: "/orders/mine", headers: alice });
+    const bobFirst = await app.inject({ method: "GET", url: "/orders/mine", headers: bob });
+
+    expect(aliceAgain.headers["x-cache"]).toBe("HIT");
+    expect(bobFirst.headers["x-cache"]).toBe("MISS");
+    expect(bobFirst.json<EchoBody>().headers["x-user-id"]).toBe("bob");
+  });
 });
