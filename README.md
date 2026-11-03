@@ -63,7 +63,7 @@ for i in $(seq 6); do curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/ap
 
 # protected route: get a token from the dev issuer first
 TOKEN=$(curl -s localhost:4000/token -H 'content-type: application/json' \
-  -d '{"sub":"user-42","scope":"users:read"}' | jq -r .access_token)
+  -d '{"sub":"user-42","scope":"users:read"}' | jq -r .access_token) # needs jq
 curl -i localhost:8080/api/users/me -H "authorization: Bearer $TOKEN"
 
 curl localhost:8080/metrics
@@ -94,6 +94,20 @@ routes:
 
 The file is validated with zod at startup, so a typo or a route that asks for auth without a JWKS
 URL stops the process with a readable error.
+
+## Layout
+
+```
+src/
+  config/       zod schema and yaml/json loader
+  proxy/        route registration, forwarding, header handling
+  auth/         JWKS-backed JWT verifier and the per-route auth hook
+  rate-limit/   limiter, store port, memory and Redis stores
+  resilience/   circuit breaker and round-robin upstream pool
+  cache/        LRU response cache
+  metrics.ts    prom-client registry and /metrics
+examples/       demo upstreams, dev token issuer, docker gateway config
+```
 
 ## Design notes
 
